@@ -152,8 +152,6 @@ def build_ffmpeg_cmd(
         "48000",
         "-ac",
         "2",
-        "-sample_fmt",
-        "s24",
         "-c:a",
         "pcm_s24be",
         "-payload_type",
