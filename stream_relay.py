@@ -35,6 +35,7 @@ DEFAULT_PLAYER_URL = os.getenv("SWARMFM_PLAYER_URL", "https://player.sw.arm.fm/"
 DEFAULT_RTP_TARGET = os.getenv("AES67_RTP_TARGET", "rtp://239.69.0.1:5004")
 DEFAULT_PAYLOAD_TYPE = os.getenv("AES67_PAYLOAD_TYPE", "96")
 DEFAULT_SDP_PATH = os.getenv("AES67_SDP_FILE", "aes67.sdp")
+DEFAULT_PCM_CODEC = os.getenv("AES67_PCM_CODEC", "pcm_s16be")
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 
 STREAM_HINTS = (
@@ -136,6 +137,7 @@ def build_ffmpeg_cmd(
     target_rtp: str,
     sdp_file: str,
     payload_type: str,
+    pcm_codec: str,
 ) -> Sequence[str]:
     return [
         FFMPEG_BIN,
@@ -153,7 +155,7 @@ def build_ffmpeg_cmd(
         "-ac",
         "2",
         "-c:a",
-        "pcm_s24be",
+        pcm_codec,
         "-payload_type",
         payload_type,
         "-f",
@@ -183,7 +185,13 @@ async def run_relay(args):
         if len(found) > 1:
             print("Other candidates:\n  " + "\n  ".join(found[1:]))
 
-    cmd = build_ffmpeg_cmd(stream_url, args.target_rtp, args.sdp_file, args.payload_type)
+    cmd = build_ffmpeg_cmd(
+        stream_url,
+        args.target_rtp,
+        args.sdp_file,
+        args.payload_type,
+        args.pcm_codec,
+    )
     proc = start_ffmpeg(cmd)
 
     def shutdown(signame: str):
@@ -230,6 +238,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     relay.add_argument("--stream-url", default=os.getenv("SWARMFM_STREAM_URL"))
     relay.add_argument("--target-rtp", default=DEFAULT_RTP_TARGET, help="rtp://host:port (can be multicast).")
     relay.add_argument("--payload-type", default=DEFAULT_PAYLOAD_TYPE, help="RTP payload type to announce in SDP.")
+    relay.add_argument("--pcm-codec", default=DEFAULT_PCM_CODEC, help="PCM codec (e.g., pcm_s16be, pcm_s24be).")
     relay.add_argument("--sdp-file", default=DEFAULT_SDP_PATH, help="Path to write SDP metadata for receivers.")
     relay.add_argument("--wait-ms", type=int, default=12000, help="How long to wait for discovery when sniffing.")
     relay.add_argument(
