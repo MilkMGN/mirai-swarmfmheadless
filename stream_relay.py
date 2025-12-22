@@ -58,9 +58,34 @@ def is_stream_candidate(url: str, content_type: str | None) -> bool:
     return False
 
 
-async def sniff_stream_url(player_url: str, wait_ms: int = 12000) -> List[str]:
+_chromium_checked = False
+
+
+def ensure_chromium_installed(auto_install: bool) -> None:
+    """
+    Make sure Playwright's Chromium is present. If auto_install is True, attempt
+    to download it via `python -m playwright install chromium` (idempotent).
+    """
+    if not auto_install:
+        return
+    global _chromium_checked
+    if _chromium_checked:
+        return
+    cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as exc:  # pragma: no cover - runtime guard
+        raise RuntimeError(
+            "Playwright is installed but Chromium is missing; run `python -m playwright install chromium` manually."
+        ) from exc
+    _chromium_checked = True
+
+
+async def sniff_stream_url(player_url: str, wait_ms: int = 12000, auto_install: bool = True) -> List[str]:
     if async_playwright is None:
         raise RuntimeError("playwright is not installed; run `pip install playwright && playwright install chromium`")
+
+    ensure_chromium_installed(auto_install)
 
     candidates: List[str] = []
 
@@ -152,7 +177,7 @@ def start_ffmpeg(cmd: Sequence[str]) -> subprocess.Popen:
 async def run_relay(args):
     stream_url = args.stream_url
     if not stream_url:
-        found = await sniff_stream_url(args.player_url, wait_ms=args.wait_ms)
+        found = await sniff_stream_url(args.player_url, wait_ms=args.wait_ms, auto_install=args.auto_install)
         if not found:
             raise RuntimeError("No candidate stream URLs were detected; pass --stream-url manually as a fallback.")
         stream_url = found[0]
@@ -177,7 +202,7 @@ async def run_relay(args):
 
 
 async def run_sniff(args):
-    urls = await sniff_stream_url(args.player_url, wait_ms=args.wait_ms)
+    urls = await sniff_stream_url(args.player_url, wait_ms=args.wait_ms, auto_install=args.auto_install)
     if not urls:
         print("No likely stream URLs detected.")
     else:
@@ -193,6 +218,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     sniff = sub.add_parser("sniff", help="Log stream URLs discovered while the player loads.")
     sniff.add_argument("--player-url", default=DEFAULT_PLAYER_URL)
     sniff.add_argument("--wait-ms", type=int, default=12000, help="How long to observe network traffic.")
+    sniff.add_argument(
+        "--no-auto-install",
+        dest="auto_install",
+        action="store_false",
+        help="Skip running `playwright install chromium` automatically.",
+    )
+    sniff.set_defaults(auto_install=True)
     sniff.set_defaults(func=run_sniff)
 
     relay = sub.add_parser("relay", help="Restream to AES67 RTP via ffmpeg.")
@@ -202,6 +234,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     relay.add_argument("--payload-type", default=DEFAULT_PAYLOAD_TYPE, help="RTP payload type to announce in SDP.")
     relay.add_argument("--sdp-file", default=DEFAULT_SDP_PATH, help="Path to write SDP metadata for receivers.")
     relay.add_argument("--wait-ms", type=int, default=12000, help="How long to wait for discovery when sniffing.")
+    relay.add_argument(
+        "--no-auto-install",
+        dest="auto_install",
+        action="store_false",
+        help="Skip running `playwright install chromium` automatically.",
+    )
+    relay.set_defaults(auto_install=True)
     relay.set_defaults(func=run_relay)
 
     return parser.parse_args(argv)
