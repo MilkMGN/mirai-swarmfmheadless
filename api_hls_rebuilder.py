@@ -52,9 +52,12 @@ def fetch_state(api_url: str) -> Optional[dict]:
 
 
 def extract_track(state: dict) -> Optional[tuple[str, float]]:
-    # Expect shape: {"track": {"id": <id>, ...}, "position": <seconds>, ...}
+    # Accept either {"track": {...}} or {"current": {...}}, plus "position".
     try:
-        track_id = str(state["track"]["id"])
+        track_obj = state.get("track") or state.get("current")
+        if not track_obj or "id" not in track_obj:
+            return None
+        track_id = str(track_obj["id"])
         position = float(state.get("position", 0))
         return track_id, max(position, 0.0)
     except Exception:
@@ -65,11 +68,12 @@ def sanitize_state_for_log(state: Optional[dict]) -> Optional[dict]:
     if not state or not isinstance(state, dict):
         return state
     cleaned = dict(state)
-    track = cleaned.get("track")
-    if isinstance(track, dict) and "lyrics" in track:
-        track = dict(track)
-        track.pop("lyrics", None)
-        cleaned["track"] = track
+    for key in ("track", "current"):
+        track = cleaned.get(key)
+        if isinstance(track, dict):
+            tcopy = dict(track)
+            tcopy.pop("lyrics", None)
+            cleaned[key] = tcopy
     return cleaned
 
 
