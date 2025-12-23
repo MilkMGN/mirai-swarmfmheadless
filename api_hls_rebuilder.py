@@ -39,7 +39,7 @@ OUT_DIR_DEFAULT = os.getenv("SWARMFM_HLS_DIR", "hls_out")
 PLAYLIST_DEFAULT = os.getenv("SWARMFM_HLS_PLAYLIST", "live.m3u8")
 SEGMENT_SECONDS_DEFAULT = float(os.getenv("SWARMFM_HLS_SEGMENT_SECONDS", "6"))
 HTTP_PORT_DEFAULT = int(os.getenv("SWARMFM_HLS_HTTP_PORT", "8080"))
-POLL_SECONDS_DEFAULT = float(os.getenv("SWARMFM_API_POLL_SECONDS", "5"))
+POLL_SECONDS_DEFAULT = float(os.getenv("SWARMFM_API_POLL_SECONDS", "1"))
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 
 
@@ -59,6 +59,18 @@ def extract_track(state: dict) -> Optional[tuple[str, float]]:
         return track_id, max(position, 0.0)
     except Exception:
         return None
+
+
+def sanitize_state_for_log(state: Optional[dict]) -> Optional[dict]:
+    if not state or not isinstance(state, dict):
+        return state
+    cleaned = dict(state)
+    track = cleaned.get("track")
+    if isinstance(track, dict) and "lyrics" in track:
+        track = dict(track)
+        track.pop("lyrics", None)
+        cleaned["track"] = track
+    return cleaned
 
 
 class HLSRebuilder:
@@ -154,7 +166,7 @@ class HLSRebuilder:
         while not self._stop.is_set():
             state = fetch_state(self.api_url)
             if self.verbose:
-                print(f"Fetched state: {state!r}")
+                print(f"Fetched state: {sanitize_state_for_log(state)!r}")
             track = extract_track(state) if state else None
             if track:
                 track_id, position = track
