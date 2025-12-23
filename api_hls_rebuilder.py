@@ -69,6 +69,7 @@ class HLSRebuilder:
         playlist_name: str,
         segment_seconds: float,
         poll_seconds: float,
+        verbose: bool,
     ):
         self.api_url = api_url
         self.out_dir = out_dir
@@ -78,6 +79,7 @@ class HLSRebuilder:
         self._ffmpeg_proc: Optional[subprocess.Popen] = None
         self._stop = threading.Event()
         self._current_track: Optional[str] = None
+        self.verbose = verbose
 
     def stop(self):
         self._stop.set()
@@ -147,8 +149,12 @@ class HLSRebuilder:
             raise RuntimeError("ffmpeg not found; install it or set FFMPEG_BIN") from None
 
     def loop(self):
+        if self.verbose:
+            print(f"Polling {self.api_url} every {self.poll_seconds}s")
         while not self._stop.is_set():
             state = fetch_state(self.api_url)
+            if self.verbose:
+                print(f"Fetched state: {state!r}")
             track = extract_track(state) if state else None
             if track:
                 track_id, position = track
@@ -157,6 +163,9 @@ class HLSRebuilder:
                     print(f"Switching to track {track_id} @ {position:.2f}s -> {media_url}")
                     self._current_track = track_id
                     self._start_ffmpeg(media_url, position)
+            else:
+                if self.verbose:
+                    print("No valid track info found in API response.")
             time.sleep(self.poll_seconds)
 
 
@@ -180,6 +189,7 @@ def main(argv=None) -> int:
     parser.add_argument("--segment-seconds", type=float, default=SEGMENT_SECONDS_DEFAULT)
     parser.add_argument("--poll-seconds", type=float, default=POLL_SECONDS_DEFAULT)
     parser.add_argument("--http-port", type=int, default=HTTP_PORT_DEFAULT)
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
@@ -189,6 +199,7 @@ def main(argv=None) -> int:
         playlist_name=args.playlist,
         segment_seconds=args.segment_seconds,
         poll_seconds=args.poll_seconds,
+        verbose=args.verbose,
     )
 
     http_thread = threading.Thread(target=run_http_server, args=(out_dir, args.http_port), daemon=True)
