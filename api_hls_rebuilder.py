@@ -51,7 +51,7 @@ def fetch_state(api_url: str) -> Optional[dict]:
         return None
 
 
-def extract_track(state: dict) -> Optional[tuple[str, float]]:
+def extract_track(state: dict) -> Optional[tuple[str, float, Optional[float]]]:
     # Accept either {"track": {...}} or {"current": {...}}, plus "position".
     try:
         track_obj = state.get("track") or state.get("current")
@@ -59,7 +59,22 @@ def extract_track(state: dict) -> Optional[tuple[str, float]]:
             return None
         track_id = str(track_obj["id"])
         position = float(state.get("position", 0))
-        return track_id, max(position, 0.0)
+        duration = track_obj.get("duration")
+        duration_val = float(duration) if duration is not None else None
+        return track_id, max(position, 0.0), duration_val
+    except Exception:
+        return None
+
+
+def extract_next(state: dict) -> Optional[tuple[str, Optional[float]]]:
+    try:
+        nxt = state.get("next")
+        if not nxt or "id" not in nxt:
+            return None
+        track_id = str(nxt["id"])
+        duration = nxt.get("duration")
+        duration_val = float(duration) if duration is not None else None
+        return track_id, duration_val
     except Exception:
         return None
 
@@ -96,6 +111,8 @@ class HLSRebuilder:
         self._stop = threading.Event()
         self._current_track: Optional[str] = None
         self.verbose = verbose
+        self._ensure_out_dir()
+        self._write_placeholder_playlist()
 
     def stop(self):
         self._stop.set()
@@ -123,22 +140,34 @@ class HLSRebuilder:
         else:
             self.out_dir.mkdir(parents=True, exist_ok=True)
 
-    def _start_ffmpeg(self, media_url: str, start_at: float):
+    def _ensure_out_dir(self):
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _write_placeholder_playlist(self):
+        """Write a minimal playlist so clients don't 404 before ffmpeg emits segments."""
+        self._ensure_out_dir()
+        placeholder = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-ENDLIST\n"
+        (self.out_dir / self.playlist_name).write_text(placeholder, encoding="utf-8")
+
+    def _start_ffmpeg(self, track_id: str, media_url: str, start_at: float):
         self._kill_ffmpeg()
         self._clean_out_dir()
+        self._write_placeholder_playlist()
         playlist_path = self.out_dir / self.playlist_name
+        segment_path = self.out_dir / f"{track_id}_%03d.ts"
         cmd = [
             FFMPEG_BIN,
+            "-re",
             "-reconnect",
             "1",
             "-reconnect_streamed",
             "1",
             "-reconnect_delay_max",
             "2",
-            "-ss",
-            str(start_at),
             "-i",
             media_url,
+            "-ss",
+            str(start_at),
             "-vn",
             "-c:a",
             "aac",
@@ -156,6 +185,11 @@ class HLSRebuilder:
             "8",
             "-hls_flags",
             "delete_segments+omit_endlist",
+            "-avoid_negative_ts",
+            "make_zero",
+            "-copyts",
+            "-hls_segment_filename",
+            str(segment_path),
             str(playlist_path),
         ]
         print(f"Starting ffmpeg: {' '.join(cmd)}")
@@ -163,6 +197,8 @@ class HLSRebuilder:
             self._ffmpeg_proc = subprocess.Popen(cmd)
         except FileNotFoundError:
             raise RuntimeError("ffmpeg not found; install it or set FFMPEG_BIN") from None
+        if self.verbose:
+            print(f"ffmpeg PID: {self._ffmpeg_proc.pid}")
 
     def loop(self):
         if self.verbose:
@@ -172,13 +208,48 @@ class HLSRebuilder:
             if self.verbose:
                 print(f"Fetched state: {sanitize_state_for_log(state)!r}")
             track = extract_track(state) if state else None
+            nxt = extract_next(state) if state else None
+
+            # If ffmpeg died, restart with current track/position.
+            if self._ffmpeg_proc and self._ffmpeg_proc.poll() is not None:
+                if self.verbose:
+                    print(f"ffmpeg exited with code {self._ffmpeg_proc.returncode}; restarting.")
+                self._ffmpeg_proc = None
+                if nxt:
+                    next_id, _ = nxt
+                    media_url = MEDIA_URL_TEMPLATE.format(id=next_id)
+                    self._current_track = next_id
+                    self._start_ffmpeg(next_id, media_url, 0.0)
+                elif track:
+                    track_id, position, duration = track
+                    media_url = MEDIA_URL_TEMPLATE.format(id=track_id)
+                    self._current_track = track_id
+                    self._start_ffmpeg(track_id, media_url, position)
+
             if track:
-                track_id, position = track
+                track_id, position, duration = track
+                remaining = (duration - position) if duration is not None else None
+                next_id = nxt[0] if nxt else None
+
+                # If we're on a new track, start it.
                 if track_id != self._current_track:
                     media_url = MEDIA_URL_TEMPLATE.format(id=track_id)
-                    print(f"Switching to track {track_id} @ {position:.2f}s -> {media_url}")
+                    print(
+                        f"Switching to track {track_id} @ {position:.2f}s "
+                        f"(duration={duration}, next={next_id}) -> {media_url}"
+                    )
                     self._current_track = track_id
-                    self._start_ffmpeg(media_url, position)
+                    self._start_ffmpeg(track_id, media_url, position)
+                else:
+                    # If we're near the end and we know the next track, jump early.
+                    if remaining is not None and remaining <= 1.0 and next_id and next_id != self._current_track:
+                        media_url = MEDIA_URL_TEMPLATE.format(id=next_id)
+                        print(
+                            f"Pre-switching to next track {next_id} at tail of current "
+                            f"(remaining {remaining:.2f}s) -> {media_url}"
+                        )
+                        self._current_track = next_id
+                        self._start_ffmpeg(next_id, media_url, 0.0)
             else:
                 if self.verbose:
                     print("No valid track info found in API response.")
